@@ -65,84 +65,86 @@ async function callLLM(messages, { model = 'gpt-4o-mini', temperature = 0.7, max
 
 // ── Game State Summarizer ──
 
-function summarizeGames(records) {
-    const games = records.games;
-    const lines = [];
+/**
+ * 📊 1. 통계 데이터 압축기 (LLM 토큰 최적화 및 환각 방지)
+ */
+function compressDataForLLM(records) {
+    const { games, unitScores, learnedParams } = records;
+    if (!games || games.length === 0) return "데이터 부족";
 
-    lines.push(`## 게임 결과 (${games.length}판)`);
-    for (const g of games) {
-        lines.push(`### 게임 #${g.gameNumber}: ${g.maxRound} | HP:${g.finalHP} | DPS:${g.finalDPS} | Lv.${g.level}`);
-        lines.push(`시너지: ${(g.synergies || []).join(', ') || '없음'}`);
-        lines.push('');
+    const totalGames = games.length;
+    const avgRound = learnedParams?.avgRoundReached || 0;
 
-        // Key rounds
-        for (const r of (g.log || [])) {
-            if (!r.round || r.round === '0') continue;
-            const cov = r.requiredDPS > 0 ? ((r.dps / r.requiredDPS) * 100).toFixed(0) : '100';
-            const units = (r.unitsBought || []).map(u => `${u.name}(${u.cost}G${u.merged ? ',★합' : ''})`).join(', ');
-            const synergies = (r.synergySnapshot || []).map(s => `${s.name}(${s.count})`).join(', ');
-            lines.push(`  ${r.round}: 💰${r.gold}G ❤️${r.hp} Lv.${r.level} [${r.boardSize}] DPS:${r.dps}/${r.requiredDPS}(${cov}%) ${units ? '구매:' + units : ''} ${synergies ? '시너지:' + synergies : ''}`);
-        }
-        lines.push('');
-    }
+    // 유닛 티어 분류 (최소 5판 이상 쓰인 유닛만)
+    const validUnits = Object.entries(unitScores || {})
+        .filter(([_, s]) => s.gamesPlayed >= 5)
+        .sort((a, b) => b[1].avgScore - a[1].avgScore);
 
-    return lines.join('\n');
+    const opUnits = validUnits.slice(0, 5).map(([name, s]) =>
+        `- ${name} (픽률: ${((s.gamesPlayed / totalGames) * 100).toFixed(0)}%, 도달 라운드: ${s.avgScore.toFixed(1)})`
+    );
+
+    const trapUnits = validUnits.slice(-5).reverse().map(([name, s]) =>
+        `- ${name} (픽률: ${((s.gamesPlayed / totalGames) * 100).toFixed(0)}%, 도달 라운드: ${s.avgScore.toFixed(1)})`
+    );
+
+    // 시너지 통계
+    const synergyStats = Object.entries(learnedParams?.synergyScores || {})
+        .sort((a, b) => (b[1].total / b[1].count) - (a[1].total / a[1].count))
+        .map(([name, data]) =>
+            `- [${name}] 평균 도달: ${(data.total / data.count).toFixed(1)}R (사용: ${data.count}번)`
+        );
+
+    return `
+[누적 시뮬레이션 통계]
+- 총 테스트 판수: ${totalGames}판
+- 전체 평균 도달 라운드: ${avgRound.toFixed(1)}R
+
+[🏆 1티어 (OP) 유닛 Top 5]
+${opUnits.join('\n') || '데이터 부족'}
+
+[💀 함정 (Trap) 유닛 Top 5]
+${trapUnits.join('\n') || '데이터 부족'}
+
+[🔗 시너지 파워 랭킹]
+${synergyStats.join('\n') || '데이터 부족'}
+    `.trim();
 }
-
-// ── UNIT_DB Reference ──
-
-const UNIT_DB_SUMMARY = `
-## 유닛 DB (46종)
-### 1코 (8종): PC방 채굴자(BTC,6dps), 메타마스크 유저(DeFi,7), 스캠 개발자(Social,7), PerpDEX(Exchange,8), HODLer(VC,8), FUD 유포자(FUD,8), PI User(Rugpull,8), Gareth Soloway(Bear,7)
-### 2코 (8종): Jesse Pollak(DeFi,14), Jesse Powell(Exchange,12), Kashkari(FUD,15), OpenSea(Social,14), DAO 거버너(VC,13), Ruja Ignatova(Rugpull,15), Kris Marszalek(Bear,14), 소규모 풀 운영자(BTC,13)
-### 3코 (8종): Uniswap V4(DeFi,24), CZ(Exchange,22), Peter Schiff(FUD,25), Elon Musk(Social,24), 비트코인 고래(BTC,21), Marc Andreessen(VC,22), LUNA 홀더(Rugpull,25), 마이클 세일러(Bear,23)
-### 4코 (8종): Vitalik(DeFi,36), Brian Armstrong(Exchange,35), Cathie Wood(FUD,38), Punk6529(Social,36), 사토시 나카모토(BTC,34), 크리스 딕슨(VC,35), 김치프리미엄 트레이더(Rugpull,38), Jim Cramer(Bear,36)
-### 5코 (8종): GCR(DeFi,52), SBF(Exchange,50), Elizabeth Warren(FUD,55), Jack Dorsey(Social,52), 라이트닝 노드(BTC,48), a16z crypto(VC,50), Do Kwon(Rugpull,55), Nouriel Roubini(Bear,52)
-
-### 시너지 (origin 2/4/6/8): Bitcoin, DeFi, Social, Exchange, VC, FUD, Rugpull, Bear
-- 2개: 소량 버프, 4개: 중간 버프, 6개: 강력 버프
-
-### 합성: 같은 유닛 3개 → ★2 (스탯x2), 9개 → ★3 (스탯x4)
-
-### 스테이지: 각 스테이지 7라운드 (1~6 일반 + 7 보스), 보스 HP 높음
-`;
 
 // ── Feature A: Post-Game Analysis ──
 
+/**
+ * 🧠 2. 수석 기획자(LLM) 분석 요청 함수
+ */
 export async function postGameAnalysis(records) {
-    console.log('\n🧠 LLM 포스트 게임 분석...');
+    const statsSummary = compressDataForLLM(records);
+    console.log("  📊 LLM에게 전달할 통계 요약 생성 완료");
 
-    const summary = summarizeGames(records);
+    const prompt = `
+당신은 글로벌 Top VC 해시드(Hashed)의 투자를 받은 Web3 오토배틀러 디펜스 게임의 '수석 밸런스 기획자'입니다.
+현재 QA 봇이 백그라운드에서 수십~수백 판을 시뮬레이션한 통계 데이터를 가져왔습니다.
+
+아래 통계를 바탕으로 마크다운(Markdown) 형식의 [정밀 밸런스 리포트]를 작성하십시오.
+추상적인 조언은 배제하고, "어떤 시너지를 몇 % 너프해야 하는지", "어떤 유닛의 골드 비용을 올려야 하는지" 구체적인 수치를 제안해야 합니다.
+
+${statsSummary}
+
+### 작성 양식 (반드시 아래 포맷을 지킬 것):
+## 📈 메타 분석 요약
+(현재 어떤 시너지와 유닛이 OP이고, 어떤 것이 버려지고 있는지 3줄 요약)
+
+## ⚖️ 긴급 밸런스 패치 제안 (Action Item)
+1. **[너프 필요]**: (OP 유닛/시너지 이름) - (이유 및 구체적인 너프 수치 제안)
+2. **[버프 필요]**: (함정 유닛/시너지 이름) - (이유 및 구체적인 버프 수치 제안)
+3. **[경제 시스템]**: (현재 유저들이 이자 시스템을 어떻게 활용하고 있는지, 30골드 제한이 적절한지 분석)
+
+## 💡 수석 기획자의 코멘트
+(해시드 심사역들이 좋아할 만한 Web3 내러티브적 관점에서의 메타 해석 한 마디)
+`;
 
     const messages = [
-        {
-            role: 'system',
-            content: `당신은 오토배틀러 게임 "CoinRandomDefense"의 밸런스 분석 전문가 AI입니다.
-게임 플레이 데이터를 분석하여 밸런스 문제점을 식별하고 개선안을 제시합니다.
-
-${UNIT_DB_SUMMARY}
-
-출력 형식:
-1. **밸런스 진단** (5줄 이내)
-2. **핵심 문제** (최대 3개, 구체적 수치 포함)
-3. **패치 제안** (JSON 형식)
-4. **전략 개선** (AI 에이전트가 다음 게임에서 할 수 있는 것)
-
-패치 제안 JSON 예시:
-\`\`\`json
-{
-  "patches": [
-    {"target": "2-7 보스", "field": "hp", "current": 142, "suggested": 100, "reason": "DPS 달성률 9%로 너무 어려움"},
-    {"target": "FUD 유포자", "field": "dps", "current": 8, "suggested": 10, "reason": "1코 DPS 효율 상향"}
-  ]
-}
-\`\`\`
-`
-        },
-        {
-            role: 'user',
-            content: `다음 ${records.games.length}판의 게임 데이터를 분석해주세요:\n\n${summary}`
-        }
+        { role: 'system', content: '당신은 Web3 오토배틀러 디펜스 게임의 수석 밸런스 기획자입니다. 데이터 기반으로 구체적인 수치를 포함한 밸런스 리포트를 작성합니다.' },
+        { role: 'user', content: prompt }
     ];
 
     const result = await callLLM(messages, { maxTokens: 2000 });

@@ -2,7 +2,8 @@
  * CoinRandomDefense v3.5 — AI Game Player v2
  * 
  * 챌린저급 성장 자동화 시스템
- * Fixed: bench/board card selectors, combat detection, placement logic
+ * Level 1: Dynamic UNIT_DB from config.ts
+ * Level 2: Forced Meta Exploration (MCTS-lite)
  */
 
 import puppeteer from 'puppeteer';
@@ -14,67 +15,96 @@ const SCREENSHOT_DIR = path.resolve('ai-screenshots');
 if (!fs.existsSync(SCREENSHOT_DIR)) fs.mkdirSync(SCREENSHOT_DIR);
 const RECORDS_FILE = path.resolve('ai-records.json');
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+// ⚡ [속도 혁신 1] Headless 모드용 초고속 Sleep (대기 시간 80% 단축)
+const FAST_MODE = true;
+const sleep = (ms) => new Promise(r => setTimeout(r, FAST_MODE ? ms / 5 : ms));
 
 // ============================================================
-// UNIT DATABASE (from GAME_INFO.md / config.ts)
+// LEVEL 1: DYNAMIC UNIT DATABASE (자동 스크래핑)
 // ============================================================
+// config.ts에서 유닛 데이터를 자동으로 파싱합니다.
+// 밸런스 패치 후 npm run ai만 실행하면 새 수치를 자동 인식!
 
-const UNIT_DB = {
-    // 1코 (8종)
-    'PC방 채굴자': { cost: 1, origin: 'Bitcoin', dmgType: 'physical', dps: 6 },
-    '메타마스크 유저': { cost: 1, origin: 'DeFi', dmgType: 'magic', dps: 7 },
-    '스캠 개발자': { cost: 1, origin: 'Social', dmgType: 'magic', dps: 7 },
-    'PerpDEX': { cost: 1, origin: 'Exchange', dmgType: 'physical', dps: 8 },
-    'HODLer': { cost: 1, origin: 'VC', dmgType: 'physical', dps: 8 },
-    'FUD 유포자': { cost: 1, origin: 'FUD', dmgType: 'magic', dps: 8 },
-    'PI User': { cost: 1, origin: 'Rugpull', dmgType: 'physical', dps: 8 },
-    'Gareth Soloway': { cost: 1, origin: 'Bear', dmgType: 'magic', dps: 7 },
-    // 2코 (8종)
-    'Jack Dorsey': { cost: 2, origin: 'Bitcoin', dmgType: 'physical', dps: 14 },
-    'Jesse Pollak': { cost: 2, origin: 'DeFi', dmgType: 'magic', dps: 15 },
-    '워뇨띠': { cost: 2, origin: 'Social', dmgType: 'magic', dps: 16 },
-    'Jesse Powell': { cost: 2, origin: 'Exchange', dmgType: 'physical', dps: 15 },
-    'OpenSea': { cost: 2, origin: 'VC', dmgType: 'physical', dps: 15 },
-    'Craig Wright': { cost: 2, origin: 'FUD', dmgType: 'magic', dps: 14 },
-    'Daniele Sesta': { cost: 2, origin: 'Rugpull', dmgType: 'physical', dps: 14 },
-    'Hsaka': { cost: 2, origin: 'Bear', dmgType: 'magic', dps: 15 },
-    // 3코 (8종)
-    'Roger Ver': { cost: 3, origin: 'Bitcoin', dmgType: 'physical', dps: 21 },
-    'Andre Cronje': { cost: 3, origin: 'DeFi', dmgType: 'magic', dps: 24 },
-    'Rekt': { cost: 3, origin: 'Social', dmgType: 'magic', dps: 27 },
-    'Wintermute': { cost: 3, origin: 'Exchange', dmgType: 'physical', dps: 23 },
-    'Simon': { cost: 3, origin: 'VC', dmgType: 'physical', dps: 25 },
-    'Peter Schiff': { cost: 3, origin: 'FUD', dmgType: 'magic', dps: 23 },
-    'GCR': { cost: 3, origin: 'Rugpull', dmgType: 'physical', dps: 26 },
-    'Andrew Kang': { cost: 3, origin: 'Bear', dmgType: 'magic', dps: 18 },
-    // 4코 (8종)
-    'Stani Kulechov': { cost: 4, origin: 'Bitcoin', dmgType: 'physical', dps: 58 },
-    'Gavin Wood': { cost: 4, origin: 'DeFi', dmgType: 'magic', dps: 71 },
-    'Hayden Adams': { cost: 4, origin: 'Social', dmgType: 'magic', dps: 60 },
-    'Marc Andreessen': { cost: 4, origin: 'Exchange', dmgType: 'physical', dps: 54 },
-    'Balaji': { cost: 4, origin: 'VC', dmgType: 'physical', dps: 63 },
-    'Lazarus': { cost: 4, origin: 'FUD', dmgType: 'magic', dps: 76 },
-    'Zhu Su': { cost: 4, origin: 'Rugpull', dmgType: 'physical', dps: 77 },
-    'Anatoly': { cost: 4, origin: 'Bear', dmgType: 'magic', dps: 66 },
-    // 5코 (8종)
-    'Saylor': { cost: 5, origin: 'Bitcoin', dmgType: 'physical', dps: 112 },
-    'Shayne Coplan': { cost: 5, origin: 'DeFi', dmgType: 'magic', dps: 147 },
-    'Armstrong': { cost: 5, origin: 'Social', dmgType: 'magic', dps: 121 },
-    'Arthur Hayes': { cost: 5, origin: 'Exchange', dmgType: 'physical', dps: 140 },
-    'Jeff': { cost: 5, origin: 'VC', dmgType: 'physical', dps: 130 },
-    'Do Kwon': { cost: 5, origin: 'FUD', dmgType: 'magic', dps: 117 },
-    'SBF': { cost: 5, origin: 'Rugpull', dmgType: 'physical', dps: 130 },
-    'Justin Sun': { cost: 5, origin: 'Bear', dmgType: 'magic', dps: 112 },
-    // 7코 히든 (5종)
-    'Vitalik': { cost: 7, origin: 'DeFi', dmgType: 'magic', dps: 326 },
-    'CZ': { cost: 7, origin: 'Exchange', dmgType: 'physical', dps: 272 },
-    'Elon': { cost: 7, origin: 'Social', dmgType: 'magic', dps: 294 },
-    'Donald Trump': { cost: 7, origin: 'Bitcoin', dmgType: 'physical', dps: 277 },
-    'Gensler': { cost: 7, origin: 'FUD', dmgType: 'magic', dps: 282 },
-    // 10코 궁극
-    '나카모토 사토시': { cost: 10, origin: 'Bitcoin', dmgType: 'physical', dps: 848 },
-};
+function loadUnitDBFromConfig() {
+    const configPath = path.resolve('../CoinRandomDefense/v3/src/core/config.ts');
+    const altPaths = [
+        path.resolve('../../CoinRandomDefense/v3/src/core/config.ts'),
+        path.resolve('../v3/src/core/config.ts'),
+    ];
+
+    let configContent = null;
+    for (const p of [configPath, ...altPaths]) {
+        try {
+            if (fs.existsSync(p)) {
+                configContent = fs.readFileSync(p, 'utf-8');
+                console.log(`  📂 config.ts 로드: ${p}`);
+                break;
+            }
+        } catch { }
+    }
+
+    if (!configContent) {
+        console.log('  ⚠️ config.ts 못 찾음 → 내장 DB 사용');
+        return null;
+    }
+
+    const db = {};
+    // 정규식: { id: '...', name: '...', ... cost: N, ... origin: Origin.XXX, ... baseDmg: N, attackSpeed: N.NN, ... }
+    const unitRegex = /id:\s*'([^']+)',\s*name:\s*'([^']+)',.*?cost:\s*(\d+),.*?origin:\s*(?:Origin\.)?(\w+),.*?dmgType:\s*'(\w+)'\s*as\s*const,\s*baseDmg:\s*(\d+),\s*attackSpeed:\s*([\d.]+)/gs;
+
+    let match;
+    while ((match = unitRegex.exec(configContent)) !== null) {
+        const [, id, name, costStr, origin, dmgType, baseDmgStr, atkSpdStr] = match;
+        const cost = parseInt(costStr);
+        const baseDmg = parseInt(baseDmgStr);
+        const atkSpd = parseFloat(atkSpdStr);
+        const dps = Math.round(baseDmg * atkSpd);
+
+        db[name] = { id, cost, origin, dmgType, dps, baseDmg, attackSpeed: atkSpd };
+    }
+
+    if (Object.keys(db).length > 0) {
+        console.log(`  ✅ 유닛 ${Object.keys(db).length}개 자동 로드됨 (config.ts)`);
+        const top5 = Object.entries(db).sort((a, b) => b[1].dps - a[1].dps).slice(0, 5);
+        console.log(`  📊 DPS 상위: ${top5.map(([n, d]) => `${n}(${d.dps})`).join(', ')}`);
+        return db;
+    }
+    return null;
+}
+
+// 브라우저에서 window.__UNIT_DB__ 읽기 (가장 정확한 방법)
+async function loadUnitDBFromBrowser(page) {
+    try {
+        const data = await page.evaluate(() => {
+            const db = window.__UNIT_DB__;
+            if (!db) return null;
+            const result = {};
+            for (const [id, unit] of Object.entries(db)) {
+                result[unit.name] = {
+                    id: unit.id,
+                    cost: unit.cost,
+                    origin: unit.origin,
+                    dmgType: unit.dmgType,
+                    dps: Math.round(unit.baseDmg * (unit.attackSpeed || 1)),
+                    baseDmg: unit.baseDmg,
+                    attackSpeed: unit.attackSpeed,
+                };
+            }
+            return result;
+        });
+        if (data && Object.keys(data).length > 0) {
+            console.log(`  🌐 브라우저에서 유닛 ${Object.keys(data).length}개 실시간 로드!`);
+            UNIT_DB = data;
+            return true;
+        }
+    } catch (e) {
+        console.log(`  ⚠️ 브라우저 DB 로드 실패: ${e.message}`);
+    }
+    return false;
+}
+
+// 게임 접속 후 동적으로 채워질 빈 객체
+let UNIT_DB = loadUnitDBFromConfig() || {};
 
 function lookupUnit(name) {
     if (!name) return null;
@@ -91,36 +121,49 @@ function lookupUnit(name) {
 // ============================================================
 
 const defaultStrategy = {
-    interestFloor: 10,       // 낮춰서 초반에 더 많이 투자
-    earlyRerollLimit: 4,     // 초반에도 리롤 O
-    midRerollBudget: 10,     // 중반 리롤 예산 ↑
-    lateRerollBudget: 30,    // 후반 리롤 예산 ↑
-    xpBuyStartRound: 2,      // XP 구매 2라운드부터
-    xpBuyGoldThreshold: 20,  // XP 구매 골드 기준 ↓
+    // ── 이자 경제 전략 ──
+    // 실제 플레이어처럼 30G 유지 → 이자 3G/라운드 (게임 최대 이자)
+    interestFloor: 30,       // 이 이하로 골드를 안 씀 (이자 보존, 최대 3G/라운드)
+    earlyEconTarget: 20,     // 초반 목표 골드 (2G 이자)
+    loseStreakThreshold: 5,  // HP 이하면 이자 포기하고 올인
+
+    // ── 리롤 전략 ──
+    earlyRerollLimit: 0,     // 초반: 리롤 안 함 (돈 모으기)
+    midRerollBudget: 6,      // 중반: 이자 초과분만 리롤
+    lateRerollBudget: 30,    // 후반: 공격적 리롤
+
+    // ── XP 전략 ──
+    xpBuyStartRound: 3,      // XP 구매 시작 라운드
+    xpBuyGoldThreshold: 54,  // 이자 50G + XP 4G = 54G 이상일 때만
+
     originWeights: {
         Bitcoin: 1.0, DeFi: 1.0, Social: 1.0, Exchange: 1.0,
         VC: 1.0, FUD: 1.2, Rugpull: 1.0, Bear: 1.0,
     },
-    // 몬스터 경로 = 테두리 반시계방향. 중앙 셀이 사거리 커버 최대
+    // 몬스터 경로 = 테두리 반시계방향 (좌상→좌하→우하→우상)
+    // 최적 배치 = 경로 코너 근처 (2변 동시 커버)
+    // 최악 = 보드 정중앙 (사거리가 테두리까지 안 닿음)
     preferredPositions: [
-        // Tier 1: 중앙 코어 (모든 테두리와 가까움)
-        { x: 3, y: 1 }, { x: 3, y: 2 },
-        { x: 2, y: 1 }, { x: 4, y: 1 },
-        { x: 2, y: 2 }, { x: 4, y: 2 },
-        // Tier 2: 중앙 확장
-        { x: 1, y: 1 }, { x: 5, y: 1 },
-        { x: 1, y: 2 }, { x: 5, y: 2 },
-        // Tier 3: 테두리 (경로 위 = DPS 좋지만 단면만 커버)
-        { x: 3, y: 0 }, { x: 3, y: 3 },
+        // Tier 1: 왼쪽 2번째 칸 위/아래 (1순위, 2순위)
+        { x: 1, y: 1 }, { x: 1, y: 2 },
+        // Tier 2: 오른쪽 코너 인접
+        { x: 5, y: 1 }, { x: 5, y: 2 },
+        // Tier 2: 테두리 바로 안쪽 (1변 풀커버)
         { x: 2, y: 0 }, { x: 4, y: 0 },
         { x: 2, y: 3 }, { x: 4, y: 3 },
-        // Tier 4: 코너 (최악)
         { x: 0, y: 1 }, { x: 6, y: 1 },
         { x: 0, y: 2 }, { x: 6, y: 2 },
+        // Tier 3: 테두리 위 (경로 위 = 직접 커버)
         { x: 1, y: 0 }, { x: 5, y: 0 },
         { x: 1, y: 3 }, { x: 5, y: 3 },
+        { x: 3, y: 0 }, { x: 3, y: 3 },
+        // Tier 4: 코너 셀
         { x: 0, y: 0 }, { x: 6, y: 0 },
         { x: 0, y: 3 }, { x: 6, y: 3 },
+        // Tier 5: 중앙 (최악)
+        { x: 2, y: 1 }, { x: 4, y: 1 },
+        { x: 2, y: 2 }, { x: 4, y: 2 },
+        { x: 3, y: 1 }, { x: 3, y: 2 },
     ],
 };
 
@@ -246,47 +289,73 @@ async function readGameState(page) {
 // MODULE 2: STRATEGY ENGINE  
 // ============================================================
 
+// ── 이자 계산 ──
+function getInterest(gold) {
+    return Math.min(5, Math.floor(gold / 10));
+}
+
+// ── 스펜딩 가능 골드 (이자 보존) ──
+function getSpendableGold(gold, strategy, gameState) {
+    const stage = parseInt(gameState.round?.split('-')[0]) || 1;
+    const hp = gameState.hp || 20;
+
+    // HP 위급하면 이자 포기하고 올인
+    if (hp <= strategy.loseStreakThreshold) return gold;
+
+    // 초반 (stage 1): earlyEconTarget까지만 모으면 됨
+    if (stage <= 1) {
+        const target = Math.min(gold, strategy.earlyEconTarget);
+        return Math.max(0, gold - target);
+    }
+
+    // 중반 이후: 50G 이자 보존 (초과분만 사용)
+    return Math.max(0, gold - strategy.interestFloor);
+}
+
 function evaluateUnit(shopUnit, gameState, strategy) {
     if (!shopUnit || !shopUnit.canAfford) return -999;
 
     const info = lookupUnit(shopUnit.name);
     if (!info) return 1;
 
-    let score = 0;
     const stage = parseInt(gameState.round?.split('-')[0]) || 1;
-    const subRound = parseInt(gameState.round?.split('-')[1]) || 1;
-    const deficit = gameState.deficit || 0;
+    const spendable = getSpendableGold(gameState.gold, strategy, gameState);
+    let score = 0;
 
     // ============================================
-    // 1. DPS/골드 효율 (핵심 지표)
+    // 0. 이자 보존: 돈이 없으면 안 삼
     // ============================================
-    const dpsPerGold = info.dps / info.cost;
-    score += dpsPerGold * 5;
-
-    // 보드 슬롯 여유 있으면 바로 전력 보강
-    if (gameState.boardCurrent < gameState.boardMax) {
-        score += 30;  // 빈 슬롯이면 아무 유닛이든 가치 높음
-    }
-
-    // DPS 부족할수록 구매 가치 급상승
-    if (deficit > 0) {
-        score += Math.min(100, deficit * 3);
+    if (info.cost > spendable) {
+        // 예외: 합성 확정이면 이자 깨고라도 삼
+        if (shopUnit.mergeReady >= 2) score += 500;
+        else return -100;  // 이자 못 깨는 유닛은 패스
     }
 
     // ============================================
-    // 2. 합성 우선순위 (최고 가성비)
+    // 1. 합성 확정 = 무조건 삼 (★2 = DPS x2)
     // ============================================
     const ownedCount = [...gameState.bench, ...gameState.board]
         .filter(u => u && u.name === shopUnit.name).length;
-    if (ownedCount >= 2) score += 500;  // ★2 확정 = 무조건 삼
-    else if (ownedCount === 1) score += 80;  // 2장째 = 준비
-
-    // mergeReady 감지 (게임 UI에서 제공)
-    if (shopUnit.mergeReady === 3) score += 600;
-    else if (shopUnit.mergeReady === 2) score += 300;
+    if (shopUnit.mergeReady === 3) score += 800;
+    else if (shopUnit.mergeReady === 2) score += 500;
+    else if (ownedCount >= 2) score += 600;   // 3장째 = ★2 확정
+    else if (ownedCount === 1) score += 80;   // 2장째 = 준비
 
     // ============================================
-    // 3. 시너지 연계
+    // 2. 보드 슬롯 비었으면 = 전력 보강 필요
+    // ============================================
+    if (gameState.boardCurrent < gameState.boardMax) {
+        score += 100;
+        score += (info.dps / info.cost) * 10;  // DPS 높은 유닛 우선
+    }
+
+    // ============================================
+    // 3. DPS 효율 (유효 DPS / 골드)
+    // ============================================
+    score += (info.dps / info.cost) * 5;
+
+    // ============================================
+    // 4. 시너지 연계
     // ============================================
     const existingOrigins = {};
     for (const u of gameState.board) {
@@ -294,70 +363,72 @@ function evaluateUnit(shopUnit, gameState, strategy) {
         if (uInfo) existingOrigins[uInfo.origin] = (existingOrigins[uInfo.origin] || 0) + 1;
     }
     const originCount = existingOrigins[info.origin] || 0;
-    // 시너지 임계점(1→2, 3→4, 5→6)에 가까울수록 보너스
-    if (originCount === 1) score += 60;   // 2개 달성 직전
-    else if (originCount === 3) score += 80;  // 4개 달성 직전
-    else if (originCount === 5) score += 100; // 6개 달성 직전
+    if (originCount === 1) score += 60;
+    else if (originCount === 3) score += 80;
+    else if (originCount === 5) score += 100;
     else if (originCount >= 1) score += 25;
-
-    // Origin weight from learning
     score *= (strategy.originWeights[info.origin] || 1.0);
 
     // ============================================
-    // 4. 스테이지별 코스트 제한
+    // 5. 학습된 유닛 성과 반영
     // ============================================
-    if (stage <= 1 && info.cost >= 4) score -= 100;  // 초반 고코 유닛 비효율
-    if (stage >= 3 && info.cost >= 3) score += 20;   // 중반 이후 고코 선호
-    if (stage >= 4 && info.cost >= 4) score += 40;   // 후반 4-5코 적극 픽
+    const unitScores = strategy._unitScores || {};
+    const learned = unitScores[shopUnit.name];
+    if (learned && learned.gamesPlayed >= 2) {
+        const avgRound = Object.values(unitScores)
+            .filter(s => s.gamesPlayed >= 2)
+            .reduce((acc, s, _, arr) => acc + s.avgScore / arr.length, 0);
+        if (learned.avgScore > avgRound * 1.1) score += 30;   // 강한 유닛
+        else if (learned.avgScore < avgRound * 0.8) score -= 30;  // 약한 유닛
+    }
 
     // ============================================
-    // 5. 초반 공격적 구매 (골드 아끼지 않기)
+    // 6. 스테이지별 코스트 선호
     // ============================================
-    if (stage === 1) {
-        score += 15;  // 스테이지 1에선 뭐든 사는 게 이득
-        if (info.cost === 1) score += 10;  // 1코 유닛 최우선
-    }
+    if (stage <= 1 && info.cost >= 3) score -= 50;
+    if (stage >= 3 && info.cost >= 3) score += 20;
+    if (stage >= 4 && info.cost >= 4) score += 40;
 
     return score;
 }
 
 function shouldReroll(gameState, strategy, goldSpentThisTurn) {
-    const { gold, round, bench, boardCurrent, boardMax, deficit } = gameState;
+    const { gold, round, bench, boardCurrent, boardMax } = gameState;
     const stage = parseInt(round?.split('-')[0]) || 1;
-    const subRound = parseInt(round?.split('-')[1]) || 1;
+    const spendable = getSpendableGold(gold, strategy, gameState);
 
     if (bench.length >= 9) return false;
     if (gold < 4) return false;
 
-    // 스테이지별 리롤 예산
+    // 이자 보존: 리롤 후에도 이자 유지 가능해야 함
+    if (spendable < 2 && gameState.hp > strategy.loseStreakThreshold) return false;
+
+    // 예산 체크
     const budget = stage <= 1 ? strategy.earlyRerollLimit
         : stage <= 3 ? strategy.midRerollBudget
             : strategy.lateRerollBudget;
     if (goldSpentThisTurn >= budget) return false;
 
-    // 보드가 비어있으면 무조건 리롤 (유닛이 필요)
-    if (boardCurrent < boardMax && gold >= 4) return true;
+    // 초반: 절대 리롤 안 함 (돈 모으기)
+    if (stage <= 1) return false;
 
-    // DPS 부족하면 리롤하여 더 강한 유닛 탐색
-    if (deficit > 10 && gold >= 6) return true;
-
-    // 합성 가능한 유닛이 있으면 리롤 금지 (이미 상점에 있으니 사기)
+    // 합성 가능한 유닛이 상점에 있으면 리롤 금지 (사기)
     const hasGoodShop = gameState.shop.some(s => s && (s.mergeReady >= 2));
     if (hasGoodShop) return false;
 
-    // 벤치에 합성 대기(2장)인 유닛이 있으면 리롤해서 3장째 찾기
+    // 합성 대기(2장)인 유닛이 있으면 리롤해서 3장째 찾기
     const pairNames = {};
     for (const u of [...bench, ...gameState.board]) {
         if (u?.name) pairNames[u.name] = (pairNames[u.name] || 0) + 1;
     }
     const hasPair = Object.values(pairNames).some(c => c === 2);
-    if (hasPair && gold >= 6) return true;
+    if (hasPair && spendable >= 4) return true;
 
-    // 골드 50 이상이면 그냥 리롤
-    if (gold > 50) return true;
+    // 보드 비었는데 상점에 좋은 유닛 없으면 리롤
+    if (boardCurrent < boardMax && spendable >= 2) return true;
 
-    // 이자 걱정 없으면 리롤
-    if (gold - 2 >= strategy.interestFloor + 5) return true;
+    // 이자 초과분이 충분하면 리롤
+    if (spendable >= 10) return true;
 
     return false;
 }
@@ -365,25 +436,22 @@ function shouldReroll(gameState, strategy, goldSpentThisTurn) {
 function shouldBuyXP(gameState, strategy) {
     const { gold, level, round, boardCurrent, boardMax } = gameState;
     const roundNum = parseRoundNumber(round);
-    const subRound = parseInt(round?.split('-')[1]) || 1;
+    const spendable = getSpendableGold(gold, strategy, gameState);
 
     if (level >= 10) return false;
     if (gold < 4) return false;
 
-    // 보드가 꽉 차면 레벨업으로 슬롯 확보 (최우선)
-    if (boardCurrent >= boardMax && gold >= 4) return true;
+    // 이자 보존: XP 구매 후에도 이자 유지
+    if (spendable < 4 && gameState.hp > strategy.loseStreakThreshold) return false;
 
-    // 라운드 2부터 XP 구매 허용
+    // 보드가 꽉 차면 레벨업 필수 (슬롯 확보)
+    if (boardCurrent >= boardMax && spendable >= 4) return true;
+
+    // 라운드 체크
     if (roundNum < strategy.xpBuyStartRound) return false;
 
-    // 골드 여유 있으면 XP 구매
-    if (gold >= strategy.xpBuyGoldThreshold) return true;
-
-    // 보스전 직전(x-5, x-6)에 레벨업 준비
-    if (subRound >= 5 && gold >= 8) return true;
-
-    // 이자 기준 이상이면 XP 구매
-    if (gold - 4 >= strategy.interestFloor) return true;
+    // 이자 초과분이 충분하면 XP 구매
+    if (spendable >= 8) return true;
 
     return false;
 }
@@ -433,6 +501,43 @@ async function clickBenchSlot(page, index) {
         if (slots?.children[i]) slots.children[i].click();
     }, index);
     await sleep(350);
+}
+
+// 증강 선택 자동 핸들러
+async function handleAugmentPick(page) {
+    const result = await page.evaluate(() => {
+        const overlay = document.getElementById('augment-overlay');
+        if (!overlay) return null;
+
+        // 카드 찾기: overlay 안의 클릭 가능한 카드들
+        const allDivs = overlay.querySelectorAll('div');
+        const cards = Array.from(allDivs).filter(d =>
+            d.style.cursor === 'pointer' || d.onclick !== null
+        );
+        if (cards.length === 0) return null;
+
+        // 카드 텍스트 읽기
+        const cardTexts = cards.map(c => c.textContent || '');
+
+        // 전투 증강 우선순위 (DPS 관련 키워드)
+        const priorities = ['크리', '공격', '스플래시', 'DMG', '데미지', '관통', '피해', '확률'];
+        let bestIdx = 0;
+        let bestScore = 0;
+        cardTexts.forEach((text, i) => {
+            let score = 1;  // 기본 1점 (아무거나 선택)
+            priorities.forEach((kw, pri) => {
+                if (text.includes(kw)) score += (priorities.length - pri);
+            });
+            if (score > bestScore) { bestScore = score; bestIdx = i; }
+        });
+
+        // 선택 클릭
+        cards[bestIdx].click();
+        return cardTexts[bestIdx]?.substring(0, 40) || '선택 완료';
+    });
+
+    if (result) await sleep(500);
+    return result;
 }
 
 async function clickBoardCell(page, x, y) {
@@ -530,6 +635,12 @@ async function enterNormalGame(page) {
         );
         if (hasGame) {
             console.log('  ✅ 게임 로드됨');
+            // 3x 속도 설정
+            for (let s = 0; s < 2; s++) {
+                await page.evaluate(() => document.getElementById('btn-speed')?.click());
+                await sleep(200);
+            }
+            console.log('  ⚡ 3배속 설정');
             return true;
         }
         await sleep(1000);
@@ -548,6 +659,13 @@ async function playPrepPhase(page, gameState, strategy, gameLog) {
     let actions = [];
 
     console.log(`\n  ── ${round} ── 💰${gameState.gold}G ❤️${gameState.hp} Lv.${gameState.level} [${gameState.boardCurrent}/${gameState.boardMax}]`);
+
+    // === Step 0: 증강 선택 (팝업이 있으면 자동 선택) ===
+    const augResult = await handleAugmentPick(page);
+    if (augResult) {
+        console.log(`    🧬 증강 선택: ${augResult}`);
+        actions.push({ type: 'augment', choice: augResult });
+    }
 
     // === Step 1: Buy good units from current shop ===
     let state = gameState;
@@ -627,24 +745,33 @@ async function playPrepPhase(page, gameState, strategy, gameLog) {
         actions.push({ type: 'xp', count: xpBought });
     }
 
-    // === Step 4: Place bench units on board ===
+    // === Step 4: Place bench units on board (★ 높은 유닛 우선 배치) ===
     state = await readGameState(page);
     let placed = 0;
-    while (state.boardCurrent < state.boardMax && state.bench.length > 0) {
-        const benchUnit = state.bench[0];
-        if (!benchUnit) break;
+
+    // 벤치 유닛을 ★ 레벨 + DPS 기준으로 정렬 (강한 유닛 우선)
+    const sortedBench = [...state.bench].sort((a, b) => {
+        const starA = a.star || 1, starB = b.star || 1;
+        if (starB !== starA) return starB - starA;  // ★ 높은 유닛 먼저
+        const infoA = lookupUnit(a.name), infoB = lookupUnit(b.name);
+        return (infoB?.dps || 0) - (infoA?.dps || 0);  // DPS 높은 유닛 먼저
+    });
+
+    for (const benchUnit of sortedBench) {
+        if (state.boardCurrent >= state.boardMax) break;
+        if (!benchUnit) continue;
 
         const pos = chooseBestPlacement(state, strategy);
         if (!pos) break;
 
-        // Select bench unit, then click target board cell
         await clickBenchSlot(page, benchUnit.index);
         await sleep(200);
         await clickBoardCell(page, pos.x, pos.y);
         await sleep(200);
 
-        console.log(`    📌 ${benchUnit.name || '?'} → (${pos.x},${pos.y})`);
-        actions.push({ type: 'place', name: benchUnit.name, x: pos.x, y: pos.y });
+        const starTag = (benchUnit.star || 1) > 1 ? ` ★${benchUnit.star}` : '';
+        console.log(`    📌 ${benchUnit.name || '?'}${starTag} → (${pos.x},${pos.y})`);
+        actions.push({ type: 'place', name: benchUnit.name, x: pos.x, y: pos.y, star: benchUnit.star });
         placed++;
 
         state = await readGameState(page);
@@ -682,13 +809,21 @@ async function playOneGame(page, gameNumber, strategy) {
     console.log(`${'═'.repeat(50)}`);
 
     try {
-        await page.goto('http://localhost:5173/', { waitUntil: 'networkidle2', timeout: 30000 });
+        await page.goto('http://localhost:5174/', { waitUntil: 'networkidle2', timeout: 30000 });
     } catch (e) {
         console.log(`  ⚠️ 페이지 로드 재시도...`);
         await sleep(3000);
-        await page.goto('http://localhost:5173/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.goto('http://localhost:5174/', { waitUntil: 'domcontentloaded', timeout: 30000 });
     }
     await sleep(3000);
+
+    // 🔥 게임의 최신 밸런스 DB를 훔쳐와서 봇의 두뇌(UNIT_DB)에 이식함
+    UNIT_DB = await page.evaluate(() => window.__UNIT_DB__);
+    if (!UNIT_DB || Object.keys(UNIT_DB).length === 0) {
+        console.error("\u274c [치명적 에러] window.__UNIT_DB__ 를 불러오지 못했습니다. 게임 코드를 확인하세요.");
+        process.exit(1);
+    }
+    console.log(`  🔗 최신 밸런스 DB 연동 완료: 총 ${Object.keys(UNIT_DB).length}개 유닛 데이터 로드`);
 
     const entered = await enterNormalGame(page);
     if (!entered) {
@@ -718,6 +853,10 @@ async function playOneGame(page, gameNumber, strategy) {
                 console.log(`\n  💀 전투 중 게임 오버`);
                 break;
             }
+            // 전투 종료 후 증강 선택 팝업 체크
+            await sleep(500);
+            const augResult = await handleAugmentPick(page);
+            if (augResult) console.log(`    🧬 증강 선택: ${augResult}`);
             continue;
         }
 
@@ -782,62 +921,180 @@ async function playOneGame(page, gameNumber, strategy) {
 
 function loadRecords() {
     try {
-        if (fs.existsSync(RECORDS_FILE)) return JSON.parse(fs.readFileSync(RECORDS_FILE, 'utf-8'));
+        if (fs.existsSync(RECORDS_FILE)) {
+            const data = JSON.parse(fs.readFileSync(RECORDS_FILE, 'utf-8'));
+            // 마이그레이션: 이전 포맷 호환
+            if (!data.unitScores) data.unitScores = {};
+            if (!data.learnedParams) data.learnedParams = {};
+            return data;
+        }
     } catch { }
-    return { games: [], strategy: { ...defaultStrategy } };
+    return { games: [], strategy: { ...defaultStrategy }, unitScores: {}, learnedParams: {} };
 }
 
 function saveRecords(records) {
     fs.writeFileSync(RECORDS_FILE, JSON.stringify(records, null, 2));
 }
 
-function adjustStrategy(records) {
-    const strategy = JSON.parse(JSON.stringify(defaultStrategy));
-    const games = records.games;
-    if (games.length === 0) return strategy;
+// ============================================================
+// 핵심: 게임 결과로부터 학습
+// ============================================================
+function updateLearning(records, gameResult) {
+    const roundScore = parseRoundNumber(gameResult.maxRound);
 
-    const lastGame = games[games.length - 1];
-    const avgRound = games.reduce((s, g) => s + parseRoundNumber(g.maxRound), 0) / games.length;
-
-    console.log(`\n  🧠 학습 [${games.length}판] 평균R: ${avgRound.toFixed(1)}`);
-
-    // Dying early → more aggressive spending
-    if (lastGame.finalHP <= 0 && parseRoundNumber(lastGame.maxRound) < 15) {
-        strategy.interestFloor = Math.max(10, strategy.interestFloor - 5);
-        console.log('  → 조기 사망: 이자 하향');
+    // 1. 유닛별 승률 추적
+    const unitsUsed = new Set();
+    for (const round of (gameResult.log || [])) {
+        for (const u of (round.unitsOnBoard || [])) {
+            if (u.name) unitsUsed.add(u.name);
+        }
     }
 
-    // HP healthy → save more
-    if (lastGame.finalHP >= 15) {
-        strategy.interestFloor = Math.min(40, strategy.interestFloor + 5);
-        console.log('  → HP 여유: 이자 상향');
+    for (const unitName of unitsUsed) {
+        if (!records.unitScores[unitName]) {
+            records.unitScores[unitName] = { totalScore: 0, gamesPlayed: 0, avgScore: 0, bestRound: 0 };
+        }
+        const s = records.unitScores[unitName];
+        s.totalScore += roundScore;
+        s.gamesPlayed++;
+        s.avgScore = s.totalScore / s.gamesPlayed;
+        s.bestRound = Math.max(s.bestRound, roundScore);
     }
 
-    // Boost weights for synergies in good games
+    // 2. 경제 패턴 학습 (라운드별 골드 추적)
+    const goldHistory = (gameResult.log || []).map(r => r.gold || 0);
+    const avgGoldOnHand = goldHistory.length > 0 ? goldHistory.reduce((a, b) => a + b, 0) / goldHistory.length : 0;
+
+    // 3. 학습 파라미터 업데이트
+    const lp = records.learnedParams;
+    if (!lp.totalGames) lp.totalGames = 0;
+    if (!lp.avgRoundReached) lp.avgRoundReached = 0;
+    if (!lp.avgGoldHeld) lp.avgGoldHeld = 0;
+    if (!lp.bestEverRound) lp.bestEverRound = 0;
+    if (!lp.avgHP) lp.avgHP = 0;
+    if (!lp.avgLevel) lp.avgLevel = 0;
+
+    const n = lp.totalGames;
+    lp.totalGames++;
+    lp.avgRoundReached = (lp.avgRoundReached * n + roundScore) / (n + 1);
+    lp.avgGoldHeld = (lp.avgGoldHeld * n + avgGoldOnHand) / (n + 1);
+    lp.bestEverRound = Math.max(lp.bestEverRound, roundScore);
+    lp.avgHP = (lp.avgHP * n + (gameResult.finalHP || 0)) / (n + 1);
+    lp.avgLevel = (lp.avgLevel * n + (gameResult.level || 1)) / (n + 1);
+
+    // 4. 시너지별 성과 추적
+    if (!lp.synergyScores) lp.synergyScores = {};
     const nameMap = {
         '비트코인': 'Bitcoin', 'DeFi': 'DeFi', '소셜': 'Social',
         '거래소': 'Exchange', 'VC': 'VC', 'FUD': 'FUD',
         '러그풀': 'Rugpull', '베어마켓': 'Bear',
     };
-    for (const g of games) {
-        const roundScore = parseRoundNumber(g.maxRound);
-        for (const syn of (g.synergies || [])) {
-            const match = syn.match(/(.+)\((\d+)\)/);
-            if (match) {
-                const eng = nameMap[match[1]] || match[1];
-                if (strategy.originWeights[eng] !== undefined) {
-                    const bonus = roundScore > avgRound ? 0.1 : -0.05;
-                    strategy.originWeights[eng] = Math.max(0.5, Math.min(2.0, strategy.originWeights[eng] + bonus));
-                }
+    for (const syn of (gameResult.synergies || [])) {
+        const match = syn.match(/(.+)\((\d+)\)/);
+        if (match) {
+            const eng = nameMap[match[1]] || match[1];
+            if (!lp.synergyScores[eng]) lp.synergyScores[eng] = { total: 0, count: 0 };
+            lp.synergyScores[eng].total += roundScore;
+            lp.synergyScores[eng].count++;
+        }
+    }
+
+    console.log(`  📈 학습 업데이트: ${unitsUsed.size}개 유닛, 평균R:${lp.avgRoundReached.toFixed(1)}, 최고:${lp.bestEverRound}`);
+}
+
+function adjustStrategy(records) {
+    const strategy = JSON.parse(JSON.stringify(defaultStrategy));
+    const games = records.games;
+    const lp = records.learnedParams || {};
+    if (games.length === 0) return strategy;
+
+    const totalGames = lp.totalGames || games.length;
+    const avgRound = lp.avgRoundReached || 10;
+    const avgHP = lp.avgHP || 10;
+    const avgLevel = lp.avgLevel || 3;
+    const bestEver = lp.bestEverRound || 10;
+    const avgGold = lp.avgGoldHeld || 20;
+
+    console.log(`\n  🧠 누적학습 [${totalGames}판] 평균R:${avgRound.toFixed(1)} HP:${avgHP.toFixed(0)} Lv:${avgLevel.toFixed(1)} 최고R:${bestEver} 평균골드:${avgGold.toFixed(0)}`);
+
+    // ── 이자 전략 조정 ──
+    if (avgHP <= 3) {
+        strategy.interestFloor = Math.max(20, strategy.interestFloor - 10);
+        strategy.loseStreakThreshold = Math.min(10, (strategy.loseStreakThreshold || 5) + 2);
+        console.log('  → HP 매우 위험: 이자 포기 임계값 상향');
+    } else if (avgGold < 30) {
+        strategy.earlyEconTarget = Math.min(40, strategy.earlyEconTarget + 5);
+        console.log('  → 평균 골드 낮음: 초반 저축 목표 상향');
+    } else if (avgHP >= 15 && avgGold >= 40) {
+        console.log('  → 경제 안정: 현재 전략 유지');
+    }
+
+    // ── 리롤 예산 ──
+    if (avgRound < 10) {
+        strategy.midRerollBudget = Math.min(16, strategy.midRerollBudget + 3);
+        strategy.lateRerollBudget = Math.min(50, strategy.lateRerollBudget + 5);
+        console.log('  → 조기 탈락: 리롤 예산 ↑');
+    } else if (avgRound > 25) {
+        strategy.midRerollBudget = Math.max(4, strategy.midRerollBudget - 1);
+        console.log('  → 높은 도달: 리롤 절약');
+    }
+
+    // ── XP 전략 ──
+    if (avgLevel < 4 && avgRound > 8) {
+        strategy.xpBuyStartRound = Math.max(1, strategy.xpBuyStartRound - 1);
+        console.log('  → 레벨업 늦음: XP 조기 구매');
+    }
+
+    // ── 시너지 가중치 (누적 데이터 기반) ──
+    const ss = lp.synergyScores || {};
+    for (const [origin, data] of Object.entries(ss)) {
+        if (data.count >= 2) {  // 최소 2판 데이터
+            const synergyAvg = data.total / data.count;
+            const bonus = (synergyAvg - avgRound) * 0.05;  // 평균 대비 성과 비례
+            if (strategy.originWeights[origin] !== undefined) {
+                strategy.originWeights[origin] = Math.max(0.5, Math.min(2.5,
+                    strategy.originWeights[origin] + Math.max(-0.3, Math.min(0.3, bonus))
+                ));
             }
         }
     }
 
-    // XP timing
-    if (lastGame.level < 5 && parseRoundNumber(lastGame.maxRound) > 10) {
-        strategy.xpBuyStartRound = Math.max(2, strategy.xpBuyStartRound - 1);
-        strategy.xpBuyGoldThreshold = Math.max(15, strategy.xpBuyGoldThreshold - 5);
-        console.log('  → XP 구매 조기화');
+    // ── 유닛 스코어 기반 전략 ──
+    const unitScores = records.unitScores || {};
+    const goodUnits = Object.entries(unitScores)
+        .filter(([_, s]) => s.gamesPlayed >= 3 && s.avgScore > avgRound)
+        .sort((a, b) => b[1].avgScore - a[1].avgScore)
+        .slice(0, 5);
+    if (goodUnits.length > 0) {
+        console.log(`  → 강한 유닛: ${goodUnits.map(([n, s]) => `${n}(${s.avgScore.toFixed(0)})`).join(', ')}`);
+    }
+    const weakUnits = Object.entries(unitScores)
+        .filter(([_, s]) => s.gamesPlayed >= 3 && s.avgScore < avgRound * 0.7)
+        .sort((a, b) => a[1].avgScore - b[1].avgScore)
+        .slice(0, 3);
+    if (weakUnits.length > 0) {
+        console.log(`  → 약한 유닛: ${weakUnits.map(([n, s]) => `${n}(${s.avgScore.toFixed(0)})`).join(', ')}`);
+    }
+
+    console.log(`  → 이자:${strategy.interestFloor} 리롤:${strategy.midRerollBudget}/${strategy.lateRerollBudget} XP:R${strategy.xpBuyStartRound}`);
+
+    // ============================================================
+    // LEVEL 2: 강제 메타 탐험 (Forced Meta Exploration)
+    // ============================================================
+    // 5판 중 1판은 랜덤 시너지를 강제로 올인 → 사기 조합 발견
+    const shouldExplore = Math.random() < 0.2;  // 20% 확률
+    if (shouldExplore) {
+        const origins = ['Bitcoin', 'DeFi', 'Social', 'Exchange', 'VC', 'FUD', 'Rugpull', 'Bear'];
+        const targetOrigin = origins[Math.floor(Math.random() * origins.length)];
+
+        // 목표 시너지 가중치 폭파
+        strategy.originWeights[targetOrigin] = 5.0;
+        origins.forEach(org => {
+            if (org !== targetOrigin) strategy.originWeights[org] = 0.5;
+        });
+        strategy._exploration = targetOrigin;  // 탐험 모드 표시
+
+        console.log(`  🎯 [탐험 모드] ${targetOrigin} 올인 전략!`);
     }
 
     return strategy;
@@ -847,42 +1104,77 @@ function adjustStrategy(records) {
 // MAIN
 // ============================================================
 
+// ============================================================
+// MAIN (초고속 병렬 시뮬레이터 적용)
+// ============================================================
+
 (async () => {
-    const TOTAL_GAMES = 5;
+    const TOTAL_GAMES = 20; // 🎯 목표 판 수 (원하는 만큼 늘리세요. 예: 100)
+    const CONCURRENCY = 4;  // 🚀 한 번에 동시에 돌릴 게임 수 (RAM 용량에 따라 4~8 권장)
     const USE_LLM = process.argv.includes('--use-llm');
-    console.log('🤖 CRD Autobot v2 — 밸런스 체크 QA');
-    console.log(`📋 ${TOTAL_GAMES}판 플레이${USE_LLM ? ' + LLM 분석' : ''}\n`);
 
+    console.log('🤖 CRD Autobot v3 — [초고속 Headless 병렬 시뮬레이터]');
+    console.log(`📋 총 ${TOTAL_GAMES}판 플레이 (동시 ${CONCURRENCY}개 탭 실행)\n`);
+
+    // ⚡ [속도 혁신 2] Headless 모드 켜기 및 GPU 가속 끄기 (메모리 최적화)
     const browser = await puppeteer.launch({
-        headless: false,
-        args: ['--no-sandbox', '--window-size=1500,900', '--force-device-scale-factor=1'],
-        defaultViewport: { width: 1440, height: 810 },
+        headless: true, // 화면을 띄우지 않고 백그라운드에서 광속 실행
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-gpu',
+            '--disable-dev-shm-usage', // 메모리 뻗음 방지
+            '--mute-audio' // 효과음 테러 방지
+        ],
     });
-    const page = await browser.newPage();
 
-    // 누적 학습: 이전 기록을 불러와서 이어감
     const records = loadRecords();
     const startGameNum = records.games.length + 1;
     console.log(`  📚 누적 데이터: ${records.games.length}판 기록 로드됨\n`);
 
-    for (let i = 0; i < TOTAL_GAMES; i++) {
-        const gameNum = startGameNum + i;
-        const strategy = records.games.length > 0 ? adjustStrategy(records) : { ...defaultStrategy };
-        const result = await playOneGame(page, gameNum, strategy);
+    // ⚡ [속도 혁신 3] CONCURRENCY 단위로 쪼개서 병렬(Promise.all) 실행
+    for (let i = 0; i < TOTAL_GAMES; i += CONCURRENCY) {
+        const batchSize = Math.min(CONCURRENCY, TOTAL_GAMES - i);
+        console.log(`\n🚀 [병렬 처리] ${startGameNum + i} ~ ${startGameNum + i + batchSize - 1}번째 게임 동시 시작...`);
 
-        if (result) {
-            records.games.push(result);
-            saveRecords(records);
+        const promises = [];
+        for (let j = 0; j < batchSize; j++) {
+            const gameNum = startGameNum + i + j;
+
+            promises.push((async () => {
+                const page = await browser.newPage();
+
+                // 메모리 최적화: 시뮬레이션에 필요 없는 이미지, CSS 차단
+                await page.setRequestInterception(true);
+                page.on('request', req => {
+                    if (['image', 'stylesheet', 'font'].includes(req.resourceType())) req.abort();
+                    else req.continue();
+                });
+
+                const strategy = records.games.length > 0 ? adjustStrategy(records) : { ...defaultStrategy };
+                strategy._unitScores = records.unitScores || {};
+
+                const result = await playOneGame(page, gameNum, strategy);
+                await page.close(); // 완료된 탭은 즉시 닫아서 RAM 확보
+                return result;
+            })());
         }
 
-        if (i < TOTAL_GAMES) {
-            console.log(`\n⏳ 다음 게임 준비...\n`);
-            await sleep(2000);
+        // 배치 단위로 4판이 모두 끝날 때까지 기다림
+        const results = await Promise.all(promises);
+
+        // 결과 취합 및 학습 업데이트 (순차적으로 안전하게 처리)
+        for (const res of results) {
+            if (res) {
+                updateLearning(records, res);
+                records.games.push(res);
+            }
         }
+        saveRecords(records);
     }
 
     // ==============================
-    // FINAL REPORT
+    // FINAL REPORT 출력 (기존과 동일)
     // ==============================
     console.log('\n' + '═'.repeat(50));
     console.log('🏆 최종 성장 보고서');
@@ -894,52 +1186,24 @@ function adjustStrategy(records) {
         console.log(`  #${g.gameNumber}: ${g.maxRound.padEnd(5)} R${String(r).padStart(2)} HP:${String(g.finalHP).padStart(2)} DPS:${String(g.finalDPS).padStart(4)} Lv.${g.level} ${bar}`);
     }
 
-    const first = records.games[0];
-    const last = records.games[records.games.length - 1];
-    if (first && last) {
-        const growth = parseRoundNumber(last.maxRound) - parseRoundNumber(first.maxRound);
-        const best = records.games.reduce((max, g) =>
-            parseRoundNumber(g.maxRound) > parseRoundNumber(max.maxRound) ? g : max
-        );
-        console.log(`\n  📈 1판→${TOTAL_GAMES}판: ${growth > 0 ? '+' : ''}${growth}R`);
-        console.log(`  🏅 최고: 게임 #${best.gameNumber} — ${best.maxRound}`);
-    }
-
-    console.log(`\n📁 ${SCREENSHOT_DIR}`);
-    console.log(`📁 ${RECORDS_FILE}`);
-
-    // ── LLM Analysis ──
-    if (USE_LLM || true) {  // Always try, fallback handles no API key
+    if (USE_LLM || true) {
         try {
-            const llmAnalysis = await postGameAnalysis(records);
-            const llmPatches = await suggestPatches(records);
-            const llmStrategy = await improveStrategy(records);
-
-            // Save LLM results to records for report
-            records.llmAnalysis = llmAnalysis;
-            records.llmPatches = llmPatches;
-            records.llmStrategy = llmStrategy;
+            const { postGameAnalysis, suggestPatches, improveStrategy } = await import('./llm-advisor.mjs');
+            console.log('\n🧠 LLM 메타 분석 요청 중...');
+            records.llmAnalysis = await postGameAnalysis(records);
             saveRecords(records);
-
-            if (typeof llmAnalysis === 'string') {
-                console.log('\n🧠 AI 분석:');
-                console.log(llmAnalysis.slice(0, 500));
-            }
+            console.log(records.llmAnalysis.slice(0, 500) + '...\n');
         } catch (e) {
             console.log(`  ⚠️ LLM 분석 실패: ${e.message}`);
         }
     }
 
-    // ── Auto-generate Report ──
     try {
         const { execSync } = await import('child_process');
         execSync('node generate-report.mjs', { cwd: process.cwd(), stdio: 'inherit' });
-    } catch (e) {
-        console.log('  ⚠️ 리포트 생성 실패');
-    }
+    } catch (e) { }
 
     console.log('═'.repeat(50));
-
     await browser.close();
     process.exit(0);
 })();
