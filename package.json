@@ -1,0 +1,24 @@
+{
+  "name": "crd-autobot",
+  "private": true,
+  "version": "1.0.0",
+  "description": "🤖 CRD Autobot — CoinRandomDefense 밸런스 체크 QA 자동화 머신",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "ai": "node ai-player.mjs",
+    "ai:report": "node generate-report.mjs",
+    "ai:llm": "node ai-player.mjs --use-llm",
+    "debug": "node debug-dom.mjs",
+    "qa": "node qa-test.mjs",
+    "qa:screenshot": "node qa-screenshot.mjs",
+    "test:stage": "node test-beyond-2-7.mjs"
+  },
+  "devDependencies": {
+    "puppeteer": "^24.37.3",
+    "typescript": "~5.9.3",
+    "vite": "^7.3.1"
+  }
+}

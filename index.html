@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CoinRandomDefense MVP</title>
+  </head>
+  <body>
+    <div id="app">
+      <div class="header">
+        <div>💖 HP: <span id="player-hp">20</span></div>
+        <div>💰 <span id="player-gold" style="color:#f0b232;">50</span>G</div>
+      </div>
+      <div><canvas id="game-canvas" width="840" height="480"></canvas></div>
+      <div class="panel">
+        <div style="margin-bottom: 10px; color:#aaa;">대기석 (클릭 후 보드에 배치)</div>
+        <div id="bench" class="grid-9"></div>
+      </div>
+      <div class="panel">
+        <button id="btn-reroll" class="btn-reroll">
+          <span class="hotkey">D</span> 가스비 지불 (2G)
+        </button>
+        <div id="shop" class="grid-5" style="margin-top: 15px;"></div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
