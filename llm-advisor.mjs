@@ -1,18 +1,30 @@
 /**
- * CRD Autobot v2 — LLM Advisor
+ * CRD Autobot v3 — LLM Advisor (Gemini 1.5 Pro)
  * 
- * GPT-4o-mini 기반 게임 분석 + 밸런스 패치 제안
+ * Google Gemini 1.5 Pro 기반 게임 분석 + 밸런스 패치 제안
  * 
  * 기능:
  * A. postGameAnalysis()  — 게임 후 밸런스 분석
  * B. suggestPatches()    — 파라미터 변경 제안
  * C. improveStrategy()   — AI 전략 자가 개선
  * 
- * 환경변수: OPENAI_API_KEY 또는 .env 파일
+ * 환경변수: GEMINI_API_KEY (.env 파일)
  */
 
 import fs from 'fs';
 import path from 'path';
+import dotenv from 'dotenv';
+import { GoogleGenerativeAI } from '@google/generative-ai';
+
+// 1. 숨겨둔 .env 파일에서 환경변수(API 키)를 안전하게 불러옵니다.
+dotenv.config();
+
+if (!process.env.GEMINI_API_KEY) {
+    console.warn("  ⚠️ .env 파일에 GEMINI_API_KEY가 없습니다 — 폴백 모드로 실행");
+}
+
+// 2. Gemini 클라이언트 초기화 (싱글톤)
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // ── Config ──
 
@@ -20,47 +32,25 @@ const RECORDS_FILE = path.resolve('ai-records.json');
 const LLM_LOG_DIR = path.resolve('llm-logs');
 if (!fs.existsSync(LLM_LOG_DIR)) fs.mkdirSync(LLM_LOG_DIR, { recursive: true });
 
-function getApiKey() {
-    if (process.env.OPENAI_API_KEY) return process.env.OPENAI_API_KEY;
+// ── LLM Call (Gemini) ──
+
+async function callLLM(messages, { temperature = 0.3, maxTokens = 2000 } = {}) {
     try {
-        const envFile = fs.readFileSync(path.resolve('.env'), 'utf-8');
-        const match = envFile.match(/OPENAI_API_KEY\s*=\s*(.+)/);
-        if (match) return match[1].trim();
-    } catch { }
-    return null;
-}
+        const systemMsg = messages.find(m => m.role === 'system')?.content || '';
+        const userMsg = messages.filter(m => m.role !== 'system').map(m => m.content).join('\n\n');
 
-// ── LLM Call ──
+        const model = genAI.getGenerativeModel({
+            model: 'gemini-1.5-pro',
+            systemInstruction: systemMsg,
+            generationConfig: { temperature, maxOutputTokens: maxTokens },
+        });
 
-async function callLLM(messages, { model = 'gpt-4o-mini', temperature = 0.7, maxTokens = 2000 } = {}) {
-    const apiKey = getApiKey();
-    if (!apiKey) {
-        console.log('  ⚠️ OPENAI_API_KEY 미설정 — 폴백 모드');
+        const result = await model.generateContent(userMsg);
+        return result.response.text() || null;
+    } catch (e) {
+        console.error(`  ❌ Gemini API 오류: ${e.message}`);
         return null;
     }
-
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-            model,
-            messages,
-            temperature,
-            max_tokens: maxTokens,
-        }),
-    });
-
-    if (!res.ok) {
-        const body = await res.text();
-        console.error(`  ❌ LLM API 오류: ${res.status} ${body.slice(0, 200)}`);
-        return null;
-    }
-
-    const data = await res.json();
-    return data.choices?.[0]?.message?.content || null;
 }
 
 // ── Game State Summarizer ──
@@ -75,7 +65,6 @@ function compressDataForLLM(records) {
     const totalGames = games.length;
     const avgRound = learnedParams?.avgRoundReached || 0;
 
-    // 유닛 티어 분류 (최소 5판 이상 쓰인 유닛만)
     const validUnits = Object.entries(unitScores || {})
         .filter(([_, s]) => s.gamesPlayed >= 5)
         .sort((a, b) => b[1].avgScore - a[1].avgScore);
@@ -88,7 +77,6 @@ function compressDataForLLM(records) {
         `- ${name} (픽률: ${((s.gamesPlayed / totalGames) * 100).toFixed(0)}%, 도달 라운드: ${s.avgScore.toFixed(1)})`
     );
 
-    // 시너지 통계
     const synergyStats = Object.entries(learnedParams?.synergyScores || {})
         .sort((a, b) => (b[1].total / b[1].count) - (a[1].total / a[1].count))
         .map(([name, data]) =>
@@ -121,9 +109,6 @@ export async function postGameAnalysis(records) {
     console.log("  📊 LLM에게 전달할 통계 요약 생성 완료");
 
     const prompt = `
-당신은 글로벌 Top VC 해시드(Hashed)의 투자를 받은 Web3 오토배틀러 디펜스 게임의 '수석 밸런스 기획자'입니다.
-현재 QA 봇이 백그라운드에서 수십~수백 판을 시뮬레이션한 통계 데이터를 가져왔습니다.
-
 아래 통계를 바탕으로 마크다운(Markdown) 형식의 [정밀 밸런스 리포트]를 작성하십시오.
 추상적인 조언은 배제하고, "어떤 시너지를 몇 % 너프해야 하는지", "어떤 유닛의 골드 비용을 올려야 하는지" 구체적인 수치를 제안해야 합니다.
 
@@ -142,37 +127,42 @@ ${statsSummary}
 (해시드 심사역들이 좋아할 만한 Web3 내러티브적 관점에서의 메타 해석 한 마디)
 `;
 
-    const messages = [
-        { role: 'system', content: '당신은 Web3 오토배틀러 디펜스 게임의 수석 밸런스 기획자입니다. 데이터 기반으로 구체적인 수치를 포함한 밸런스 리포트를 작성합니다.' },
-        { role: 'user', content: prompt }
-    ];
+    console.log("  🚀 Gemini 1.5 Pro에게 밸런스 분석을 요청합니다. (철통 보안 적용됨)...");
 
-    const result = await callLLM(messages, { maxTokens: 2000 });
+    try {
+        const model = genAI.getGenerativeModel({
+            model: "gemini-1.5-pro",
+            systemInstruction: "당신은 해시드(Hashed)의 투자를 받은 Web3 오토배틀러 디펜스 게임의 수석 밸런스 기획자입니다.",
+            generationConfig: { temperature: 0.3 },
+        });
 
-    if (result) {
+        const result = await model.generateContent(prompt);
+        const reportMarkdown = result.response.text();
+
+        console.log("  ✅ Gemini 밸런스 리포트 생성 완료!\n");
+
         const logFile = path.join(LLM_LOG_DIR, `analysis-${Date.now()}.md`);
-        fs.writeFileSync(logFile, result, 'utf-8');
+        fs.writeFileSync(logFile, reportMarkdown, 'utf-8');
         console.log(`  📄 분석 저장: ${logFile}`);
-        return result;
-    }
+        return reportMarkdown;
 
-    // Fallback: rule-based analysis
-    return fallbackAnalysis(records);
+    } catch (error) {
+        console.error("  ❌ Gemini API 호출 실패:", error.message);
+        return fallbackAnalysis(records);
+    }
 }
 
 // ── Feature B: Balance Patch Suggestions ──
 
 export async function suggestPatches(records) {
-    console.log('\n🔧 LLM 밸런스 패치 제안...');
+    console.log('\n🔧 Gemini 밸런스 패치 제안...');
 
-    const summary = summarizeGames(records);
+    const statsSummary = compressDataForLLM(records);
 
     const messages = [
         {
             role: 'system',
             content: `당신은 게임 밸런스 디자이너입니다. 플레이 데이터를 보고 구체적인 파라미터 패치를 JSON 으로만 제안하세요.
-
-${UNIT_DB_SUMMARY}
 
 반드시 아래 JSON 형식으로만 응답:
 {
@@ -183,17 +173,13 @@ ${UNIT_DB_SUMMARY}
   "priority": "high/medium/low"
 }`
         },
-        {
-            role: 'user',
-            content: summary
-        }
+        { role: 'user', content: statsSummary }
     ];
 
     const result = await callLLM(messages, { temperature: 0.3, maxTokens: 1500 });
 
     if (result) {
         try {
-            // Extract JSON from response
             const jsonMatch = result.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
                 const parsed = JSON.parse(jsonMatch[0]);
@@ -214,10 +200,9 @@ ${UNIT_DB_SUMMARY}
 // ── Feature C: Strategy Self-Improvement ──
 
 export async function improveStrategy(records) {
-    console.log('\n📈 LLM 전략 자가 개선...');
+    console.log('\n📈 Gemini 전략 자가 개선...');
 
     const currentStrategy = records.strategy;
-    const summary = summarizeGames(records);
 
     const messages = [
         {
@@ -242,10 +227,7 @@ ${JSON.stringify(currentStrategy, null, 2)}
   }
 }`
         },
-        {
-            role: 'user',
-            content: summary
-        }
+        { role: 'user', content: compressDataForLLM(records) }
     ];
 
     const result = await callLLM(messages, { temperature: 0.4, maxTokens: 1000 });
@@ -268,7 +250,7 @@ ${JSON.stringify(currentStrategy, null, 2)}
         }
     }
 
-    return null; // Use existing strategy
+    return null;
 }
 
 // ── Fallbacks (no API key) ──
@@ -280,7 +262,6 @@ function fallbackAnalysis(records) {
     lines.push('## 밸런스 진단 (룰 기반 분석)');
     lines.push('');
 
-    // DPS analysis
     const allRounds = games.flatMap(g => g.log || []);
     const dpsGaps = {};
     for (const r of allRounds) {
@@ -303,14 +284,11 @@ function fallbackAnalysis(records) {
         lines.push('');
     }
 
-    // Economy analysis
     const avgGoldPerRound = allRounds.reduce((s, r) => s + (r.gold || 0), 0) / allRounds.length;
     lines.push(`### 경제 분석`);
     lines.push(`- 평균 잔여 골드: ${avgGoldPerRound.toFixed(1)}G`);
-    lines.push(`- 이자 전략: floor=${records.strategy?.interestFloor || '?'}`);
     lines.push('');
 
-    // Synergy analysis
     const synergyCount = {};
     for (const g of games) {
         for (const s of (g.synergies || [])) {
@@ -319,24 +297,17 @@ function fallbackAnalysis(records) {
     }
     lines.push('### 시너지 활성 빈도');
     if (Object.keys(synergyCount).length === 0) {
-        lines.push('- ⚠️ 시너지 활성 없음 — 유닛 다양성 부족');
+        lines.push('- ⚠️ 시너지 활성 없음');
     } else {
         for (const [s, c] of Object.entries(synergyCount).sort((a, b) => b[1] - a[1])) {
             lines.push(`- ${s}: ${c}회`);
         }
     }
-    lines.push('');
 
-    // Patch suggestions
+    lines.push('');
     lines.push('### 📋 패치 제안');
     if (criticalRounds.some(r => r.round === '2-7' || r.round?.endsWith('-7'))) {
         lines.push('- 보스 HP 하향 필요 (DPS 달성률 < 15%)');
-    }
-    if (avgGoldPerRound > 15) {
-        lines.push('- 골드 축적 과다 → 유닛 구매/리롤 더 공격적으로');
-    }
-    if (Object.keys(synergyCount).length < 2) {
-        lines.push('- 시너지 활성률 매우 낮음 → 같은 origin 유닛 우선 구매 전략 강화');
     }
 
     return lines.join('\n');
@@ -346,7 +317,6 @@ function fallbackPatches(records) {
     const games = records.games;
     const patches = [];
 
-    // Check boss difficulty
     const bossRounds = games.flatMap(g => (g.log || []).filter(r => r.round?.endsWith('-7')));
     for (const r of bossRounds) {
         if (r.requiredDPS > 0 && r.dps / r.requiredDPS < 0.2) {
@@ -362,7 +332,7 @@ function fallbackPatches(records) {
     }
 
     return {
-        diagnosis: '룰 기반 분석 (LLM API 미설정)',
+        diagnosis: '룰 기반 분석 (Gemini API 오류 폴백)',
         patches: patches.slice(0, 5),
         priority: patches.length > 3 ? 'high' : 'medium',
     };
@@ -373,10 +343,9 @@ function fallbackPatches(records) {
 export function generateLLMReportSection(analysis, patches) {
     if (!analysis && !patches) return '';
 
-    let html = '<h2>🧠 AI 분석 (LLM)</h2>';
+    let html = '<h2>🧠 AI 분석 (Gemini 1.5 Pro)</h2>';
 
     if (typeof analysis === 'string') {
-        // Convert markdown to simple HTML
         const htmlContent = analysis
             .replace(/### (.+)/g, '<h4>$1</h4>')
             .replace(/## (.+)/g, '<h3>$1</h3>')
@@ -405,7 +374,7 @@ export function generateLLMReportSection(analysis, patches) {
 if (process.argv[1]?.endsWith('llm-advisor.mjs')) {
     const records = JSON.parse(fs.readFileSync(RECORDS_FILE, 'utf-8'));
 
-    console.log('🤖 CRD Autobot — LLM 밸런스 분석\n');
+    console.log('🤖 CRD Autobot — Gemini 1.5 Pro 밸런스 분석\n');
 
     const analysis = await postGameAnalysis(records);
     const patches = await suggestPatches(records);
